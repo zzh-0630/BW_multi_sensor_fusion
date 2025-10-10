@@ -239,10 +239,6 @@ catkin_package(
   CATKIN_DEPENDS message_runtime std_msgs geometry_msgs sensor_msgs
 )
 
-###########
-## Build ##
-###########
-
 include_directories(
   ${catkin_INCLUDE_DIRS}
 )
@@ -260,10 +256,6 @@ target_link_libraries(publish_node
 target_link_libraries(fusion_node
   ${catkin_LIBRARIES}
 )
-
-#############
-## Install ##
-#############
 
 install(TARGETS publish_node fusion_node
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
