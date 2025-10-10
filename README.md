@@ -208,10 +208,8 @@ wget http://fishros.com/install -O fishros && bash fishros
 cmake_minimum_required(VERSION 3.0.2)
 project(sensor_time_align)
 
-## C++11 支持
 add_compile_options(-std=c++11)
 
-## 依赖的 ROS 包
 find_package(catkin REQUIRED COMPONENTS
   cv_bridge
   geometry_msgs
@@ -223,16 +221,13 @@ find_package(catkin REQUIRED COMPONENTS
   image_transport
 )
 
-## OpenCV
 find_package(OpenCV REQUIRED)
 
-## 消息文件
 add_message_files(
   FILES
   FusedState.msg
 )
 
-## 生成消息
 generate_messages(
   DEPENDENCIES
   std_msgs
@@ -240,28 +235,20 @@ generate_messages(
   sensor_msgs
 )
 
-## catkin 配置
 catkin_package(
   CATKIN_DEPENDS message_runtime std_msgs geometry_msgs sensor_msgs
 )
-
-###########
-## Build ##
-###########
 
 include_directories(
   ${catkin_INCLUDE_DIRS}
 )
 
-## 可执行文件
 add_executable(publish_node src/publish.cpp)
 add_executable(fusion_node src/fusion_node.cpp)
 
-## 保证消息生成在编译前完成
 add_dependencies(publish_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 add_dependencies(fusion_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 
-## 链接库
 target_link_libraries(publish_node
   ${catkin_LIBRARIES}
   ${OpenCV_LIBS}
@@ -270,11 +257,6 @@ target_link_libraries(fusion_node
   ${catkin_LIBRARIES}
 )
 
-#############
-## Install ##
-#############
-
-## 安装可执行文件
 install(TARGETS publish_node fusion_node
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
