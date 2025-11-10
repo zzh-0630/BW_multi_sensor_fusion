@@ -142,24 +142,37 @@ std::vector<double> interpolateVisToImu(const std::vector<VisSample>& vis,
                                         const std::vector<double>& imu_t,
                                         const std::vector<double>& vis_s,
                                         double bias) {
+    //存储插值结果的容器
     std::vector<double> vis_interp;
+    //预分配内存容量=IMU时间戳数量,提高效率
     vis_interp.reserve(imu_t.size());
+    //边界处理：视觉为空时候用0填充结果
     if (vis.empty()) {
         vis_interp.assign(imu_t.size(), 0.0);
         return vis_interp;
     }
+    //遍历每个IMU时间戳t
     for (double t : imu_t) {
+        //根据t_cam+t_bias=t_imu逻辑把imu先和视觉统一到视觉时间尺度
         double shifted_t = t - bias;
+        //用于定位shifted_t在视觉样本中的位置
         size_t j = 0;
+        //循环找到shifted_t所在的视觉时间区间
         while (j + 1 < vis.size() && vis[j+1].t < shifted_t) ++j;
+        //边界处理：如果shifted_t超过最后一个视觉样本的时间，则用最后一个视觉值填充
         if (j + 1 >= vis.size()) {
             vis_interp.push_back(vis_s.back());
             continue;
         }
+        //提取当前视觉区间的时间[t1, t2]
         double t1 = vis[j].t, t2 = vis[j+1].t;
+        //提取当前视觉区间的值[v1, v2]
         double v1 = vis_s[j], v2 = vis_s[j+1];
+        //定义插值系数alpha
         double alpha = 0.0;
+        //计算插值系数：若时间差不为0，alpha=(当前时间-起始时间)/区间总时间
         if (t2 - t1 > 1e-12) alpha = (shifted_t - t1) / (t2 - t1);
+        //线性插值v1+alpha*(v2-v1)，得到shifted_t对应的视觉角速度
         vis_interp.push_back(v1 + alpha * (v2 - v1));
     }
     return vis_interp;
@@ -261,7 +274,7 @@ void imuCallback(const sensor_msgs::Imu::ConstPtr& msg) {
     imu_buffer.push_back(s);
 }
 
-//图像消息回调函数imageCallback：把整个在线时间戳粗对齐过程分为校准阶段和修正阶段两个阶段。校准阶段收集前3000帧用于估计；修正阶段在估计完成后将每帧修正并发布
+//图像消息回调函数imageCallback：把整个在线时间戳粗对齐过程分为校准阶段和修正阶段两个阶段。校准阶段收集前3000帧用于估计,修正阶段在校准阶段估计完成后将新到来的每一帧修正并发布
 void imageCallback(const sensor_msgs::Image::ConstPtr& msg) {
     //提取图像时间戳
     double t = msg->header.stamp.toSec();
@@ -269,134 +282,138 @@ void imageCallback(const sensor_msgs::Image::ConstPtr& msg) {
     //将ROS图像消息sensor_msgs/Image转为OpenCV的cv::Mat格式
     cv::Mat img;
     try {
+        //尝试按bgr8编码转换，bgr8常为彩色图像
         cv_bridge::CvImageConstPtr cv_ptr = cv_bridge::toCvShare(msg, "bgr8");
         img = cv_ptr->image.clone();
     } catch (cv_bridge::Exception& e) {
         try {
+            //不是bgr8编码的话尝试按mono8编码转换，mono8常为灰度图像
             cv_bridge::CvImageConstPtr cv_ptr = cv_bridge::toCvShare(msg, "mono8");
             cv::cvtColor(cv_ptr->image, img, cv::COLOR_GRAY2BGR);
         } catch (...) {
+            //两种编码都失败的话打印警告并跳过该帧
             ROS_WARN("imageCallback: unsupported image encoding, skipping this image");
             return;
         }
     }
 
+    //加互斥锁保护全局数据
     std::lock_guard<std::mutex> lock(buf_mutex);
 
+    //第一帧图像到来时候标记为开始收集图像数据，意味着进入校准阶段
     if (!collected) {
-        // 第一帧图像到来，开始收集
         collected = true;
         ROS_INFO("First image received - start collecting %d images for bias estimation", TARGET_IMAGES);
     }
 
+    //数据收集阶段只缓存图像，不发布
     if (!ready_to_publish) {
-        // 仍在收集或正在计算期间，把图像缓存（这些图像不会被发布）
         ImageSample s; s.t = t; s.img = img;
         image_buffer.push_back(s);
 
-        // 检查是否达到目标帧数：当刚好等于 TARGET_IMAGES 时触发计算（在另一个线程中）
+        //检查是否达到目标帧数，当刚好等于TARGET_IMAGES所设置的目标帧数时在另一个线程中触发计算
         if ((int)image_buffer.size() == TARGET_IMAGES && !computing) {
             computing = true;
             ROS_INFO("Collected %d images - launching bias computation thread", TARGET_IMAGES);
-            // 开线程计算，不在回调阻塞
             std::thread compute_thread([](){
-                // 复制用于计算的数据（在互斥下）
+                //复制用于计算的数据，起到加锁作用，避免原缓存被修改
                 std::vector<ImageSample> imgs_copy;
                 std::vector<ImuSample> imu_copy;
                 {
                     std::lock_guard<std::mutex> lock(buf_mutex);
-                    imgs_copy = image_buffer; // 包含前 3000 帧（以及可能在计算期间到达的更多帧，但我们将只使用前3000）
-                    imu_copy = imu_buffer;    // 包含自节点启动至今所有 IMU 样本
+                    imgs_copy = image_buffer;  
+                    imu_copy = imu_buffer;  
                 }
 
-                // 为安全起见，确保 imgs_copy 至少有 TARGET_IMAGES 帧
+                //安全检查确保图像数至少有TARGET_IMAGES帧，此处为3000帧
                 if ((int)imgs_copy.size() < TARGET_IMAGES) {
                     ROS_ERROR("compute thread: unexpected small image buffer");
                     computing = false;
                     return;
                 }
 
-                // 定位用于计算的时间段：使用前 TARGET_IMAGES 帧的时间范围
+                //确定计算用的时间范围，使用前TARGET_IMAGES帧的时间范围[t0,t1]
                 double t0 = imgs_copy.front().t;
                 double t1 = imgs_copy[TARGET_IMAGES - 1].t;
 
-                // 截取 IMU 段（只取在 [t0, t1] 的 IMU）
+                //截取在[t0,t1]时间段的IMU
                 std::vector<ImuSample> imu_seg;
                 imu_seg.reserve(imu_copy.size());
                 for (const auto& s : imu_copy) {
                     if (s.t >= t0 - 1e-9 && s.t <= t1 + 1e-9) imu_seg.push_back(s);
                 }
 
+                //检查IMU样本数是否大于等于于2，因为至少2个才够计算
                 if (imu_seg.size() < 2) {
                     ROS_ERROR("Not enough IMU samples in the image interval to estimate bias (needed >=2, got %zu)", imu_seg.size());
                     computing = false;
                     return;
                 }
 
-                // 计算视觉角速度（仅使用前 TARGET_IMAGES 帧）
+                //计算视觉角速度，仅使用前TARGET_IMAGES帧
                 std::vector<ImageSample> imgs_for_vis(imgs_copy.begin(), imgs_copy.begin() + TARGET_IMAGES);
                 auto vis = computeVisualAngularVelocity(imgs_for_vis);
+                
+                //检查相机样本数是否大于等于于2，因为至少2个才够计算
                 if (vis.size() < 2) {
                     ROS_ERROR("Not enough visual angular velocity samples to estimate bias (got %zu)", vis.size());
                     computing = false;
                     return;
                 }
 
-                // 将 imu_seg 直接作为 imu 段（包含 gx,gy,gz）
+                //计算最优时间偏移
                 double bias = estimateBiasFromSegment(imu_seg, vis);
 
-                // 设置结果并进入发布阶段
+                //更新全局状态
                 {
-                    std::lock_guard<std::mutex> lock(buf_mutex);
-                    estimated_bias = bias;
-                    ready_to_publish = true;
-                    computing = false;
-                    // 按你的要求：这前 TARGET_IMAGES 帧“仅用于计算”，不发布 -> 清空 image_buffer
-                    image_buffer.clear();
+                    std::lock_guard<std::mutex> lock(buf_mutex);  //保存最优偏移
+                    estimated_bias = bias;  //设置修正阶段的时间偏移
+                    ready_to_publish = true;  //标记可以开始发布了
+                    computing = false;  //标记校准阶段的计算结束
+                    image_buffer.clear();  //清空image_buffer，因为此处的逻辑是前TARGET_IMAGES帧是只参与计算的，所以发布阶段要把它们清除
                     
-                    // 清晰打印最终时间偏移量b
+                    //打印最终时间偏移量b
                     ROS_INFO("\n==================================================");
                     ROS_INFO("===  bias calculation completed ===");
                     ROS_INFO("b = %.6f s ( %.3f ms)", estimated_bias, estimated_bias * 1000.0);
                     ROS_INFO("b is positive so camera timestamp lags behind the IMU       b is negative so camera timestamp is ahead of IMU");
                     ROS_INFO("==================================================");
-                    
                     ROS_INFO("Now entering publish mode; subsequent images will be corrected and published.");
                 }
             });
             compute_thread.detach();
         }
-        // 不发布在收集/计算阶段到达的图像
+        //不发布在校准阶段到达的图像
         return;
     }
 
-    // ready_to_publish == true：对到达的每帧图像进行时间戳修正并发布
+    //修正阶段：对到达的每帧图像进行时间戳修正并发布
     sensor_msgs::ImagePtr out_msg;
     {
-        // 创建 sensor_msgs::Image 消息并填充（保持原 header 的 frame_id）
+        //创建sensor_msgs::Image类型的消息并填充
         std_msgs::Header hdr;
         hdr.stamp = ros::Time(t + estimated_bias);
-        // copy encoding and image data via cv_bridge
+        //将OpenCV图像转为ROS消息，相机是彩色的所以编码为bgr8
         cv_bridge::CvImage cv_out(hdr, "bgr8", img);
         out_msg = cv_out.toImageMsg();
     }
+    //发布修正后的图像
     pub_correct.publish(out_msg);
 }
 
-// ---------------- main ----------------
+//主函数
 int main(int argc, char** argv) {
+    //初始化ROS节点
     ros::init(argc, argv, "timestamp_correct_node");
+    //创建节点句柄
     ros::NodeHandle nh;
-
-    // 订阅 imu 与 image
+    //订阅
     ros::Subscriber sub_imu = nh.subscribe("/imu_raw", 20000, imuCallback);
     ros::Subscriber sub_img = nh.subscribe("/image_timestamp_raw", 2000, imageCallback);
-
+    //发布
     pub_correct = nh.advertise<sensor_msgs::Image>("/image_correct_raw", 2000);
-
     ROS_INFO("timestamp_correct_node started. Waiting for images and imu...");
     ros::spin();
-
     return 0;
 }
 
