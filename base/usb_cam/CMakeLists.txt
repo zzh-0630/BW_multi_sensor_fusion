@@ -1,136 +1,116 @@
-cmake_minimum_required(VERSION 3.2)
+cmake_minimum_required(VERSION 3.5)
 project(usb_cam)
 
-message(STATUS "Searching required modules")
-find_package(PkgConfig REQUIRED)
-# FFMPEG
-pkg_check_modules(avcodec libavcodec REQUIRED)
-pkg_check_modules(avutil libavutil REQUIRED)
-pkg_check_modules(swscale libswscale REQUIRED)
-pkg_check_modules(video4linux libv4l2 REQUIRED)
-# OPENCV
+# Default to C++17
+if(NOT CMAKE_CXX_STANDARD)
+  set(CMAKE_CXX_STANDARD 17)
+endif()
+
+if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  add_compile_options(-Wall -Wextra -Wpedantic -Werror)
+endif()
+
+find_package(ament_cmake_auto REQUIRED)
+ament_auto_find_build_dependencies()
+
 find_package(OpenCV REQUIRED)
-# Reporting
-if(avcodec_FOUND)
-    message(STATUS "Found libavcodec: ${avcodec_VERSION}")
-endif()
-if(avutil_FOUND)
-    message(STATUS "Found libavutil: ${avutil_VERSION}")
-endif()
-if(swscale_FOUND)
-    message(STATUS "Found libswscale: ${swscale_VERSION}")
-endif()
-if(OpenCV_FOUND)
-    message(STATUS "Found OpenCV: ${OpenCV_VERSION}")
-endif()
-if(video4linux_FOUND)
-    message(STATUS "Found Video4Linux kernel library: ${video4linux_VERSION}")
+
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(avcodec REQUIRED libavcodec)
+pkg_check_modules(avutil REQUIRED libavutil)
+pkg_check_modules(swscale REQUIRED libswscale)
+
+if(EXISTS ${avcodec})
+  message(STATUS "Found libavcodec: ${avcodec}")
 endif()
 
-# Catkin
-find_package(catkin REQUIRED COMPONENTS
-    cv_bridge
-    image_transport
-    roscpp
-    std_msgs
-    std_srvs
-    sensor_msgs
-    camera_info_manager
-)
-catkin_package(
-    INCLUDE_DIRS include
-    LIBRARIES usb_cam
-)
-
-# Build scenario
-option(SUPPRESS_BIND_GLOBAL_PLACEHOLDERS
-    "Suppresses Boost >= 1.68 deprecation warning message for global placeholders in boost::bind instantiation"
-    ON
-)
-# Workaround for deprecation message from instantiation of Boost::bind
-# Edit for CMake < 3.12 and ROS_DISTRO < melodic by knorth55
-if("$ENV{ROS_DISTRO}" STRGREATER "melodic")
-    if(SUPPRESS_BIND_GLOBAL_PLACEHOLDERS)
-        add_compile_definitions(BOOST_BIND_GLOBAL_PLACEHOLDERS)
-    endif()
+if(EXISTS ${avutil})
+  message(STATUS "Found libavutil: ${avutil}")
 endif()
 
-include_directories(include)
-link_directories(
-    ${video4linux_LIBRARY_DIRS}
-    ${avcodec_LIBRARY_DIRS}
-    ${avutil_LIBRARY_DIRS}
-    ${swscale_LIBRARY_DIRS}
+if(EXISTS ${swscale})
+  message(STATUS "Found libswscale: ${swscale}")
+endif()
+
+## Build the USB camera library
+## Do not use ament_auto here so as to not link to rclcpp
+add_library(${PROJECT_NAME} SHARED
+  src/usb_cam.cpp
 )
 
-# Shared V4L2 driver library
-set(v4l_driver_SHARED_HEADERS
-    include/usb_cam/types.h
-    include/usb_cam/util.h
-    include/usb_cam/converters.h
-    include/usb_cam/camera_driver.h
-)
-add_library(v4l_driver
-    ${v4l_driver_SHARED_HEADERS}
-    src/util.cpp
-    src/converters.cpp
-    src/camera_driver.cpp
-)
-target_include_directories(v4l_driver PUBLIC
-    ${video4linux_INCLUDE_DIRS}
-    ${avcodec_INCLUDE_DIRS}
-    ${swscale_INCLUDE_DIRS}
-    ${avutil_INCLUDE_DIRS}
-    ${OpenCV_INCLUDE_DIRS}
-)
-target_link_libraries(v4l_driver
-    ${video4linux_LIBRARIES}
-    ${avcodec_LIBRARIES}
-    ${avutil_LIBRARIES}
-    ${swscale_LIBRARIES}
-    ${OpenCV_LIBS}
+target_include_directories(${PROJECT_NAME} PUBLIC
+  "include"
+  ${OpenCV_INCLUDE_DIRS}
 )
 
-set(usb_cam_SHARED_HEADERS
-    include/usb_cam/usb_cam.h
-)
-add_library(usb_cam
-    ${usb_cam_SHARED_HEADERS}
-    src/usb_cam.cpp
-)
-target_include_directories(usb_cam PRIVATE
-    ${catkin_INCLUDE_DIRS}
-)
-target_link_libraries(usb_cam
-    ${catkin_LIBRARIES}
-    v4l_driver
+target_link_libraries(${PROJECT_NAME}
+  ${avcodec_LIBRARIES}
+  ${avutil_LIBRARIES}
+  ${swscale_LIBRARIES}
+  ${OpenCV_LIBRARIES})
+
+ament_export_libraries(${PROJECT_NAME})
+
+## Declare a ROS 2 composible node as a library
+ament_auto_add_library(${PROJECT_NAME}_node SHARED
+  src/usb_cam_node.cpp
 )
 
-## Declare a cpp executable
-add_executable(usb_cam_node
-    src/usb_cam_node.cpp
-)
-target_include_directories(usb_cam_node PRIVATE
-    ${catkin_INCLUDE_DIRS}
-)
-target_link_libraries(usb_cam_node
-    usb_cam
-    ${catkin_LIBRARIES}
+target_link_libraries(${PROJECT_NAME}_node
+  ${PROJECT_NAME})
+
+## Use node to generate an executable
+rclcpp_components_register_node(${PROJECT_NAME}_node
+  PLUGIN "usb_cam::UsbCamNode"
+  EXECUTABLE ${PROJECT_NAME}_node_exe
 )
 
-# Installation scenario
-# Executables and libraries
-install(TARGETS ${PROJECT_NAME}_node ${PROJECT_NAME}
-    RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
-    LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+# To fix `DSO missing from command line` error with clang
+target_link_libraries(${PROJECT_NAME}_node_exe stdc++)
+
+if(SANITIZE)
+  target_compile_options(${PROJECT_NAME} PUBLIC -fsanitize=address -fsanitize=leak)
+  target_link_libraries(${PROJECT_NAME} -fsanitize=address -fsanitize=leak)
+  target_compile_options(${PROJECT_NAME}_node PUBLIC -fsanitize=address -fsanitize=leak)
+  target_link_libraries(${PROJECT_NAME}_node -fsanitize=address -fsanitize=leak)
+  target_link_libraries(${PROJECT_NAME}_node_exe -fsanitize=address -fsanitize=leak)
+endif()
+
+if(BUILD_TESTING)
+  find_package(ament_lint_auto REQUIRED)
+  ament_lint_auto_find_test_dependencies()
+  find_package(ament_cmake_gtest)
+  # Unit tests
+  ament_add_gtest(test_usb_cam_utils
+    test/test_usb_cam_utils.cpp)
+  target_link_libraries(test_usb_cam_utils
+    ${PROJECT_NAME} m stdc++)
+  ament_add_gtest(test_pixel_formats
+    test/test_pixel_formats.cpp)
+  target_link_libraries(test_pixel_formats
+    ${PROJECT_NAME} m stdc++)
+  if(INTEGRATION_TESTS)
+    ament_add_gtest(test_usb_cam_lib
+      test/test_usb_cam_lib.cpp)
+    target_link_libraries(test_usb_cam_lib
+      ${PROJECT_NAME})
+  endif()
+endif()
+
+install(
+  PROGRAMS scripts/show_image.py
+  DESTINATION lib/${PROJECT_NAME})
+
+install(TARGETS
+  ${PROJECT_NAME}
+  ${PROJECT_NAME}_node
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  RUNTIME DESTINATION lib
 )
-# Launch files
-install(DIRECTORY launch/
-    DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/launch
-    FILES_MATCHING PATTERN "*.launch"
-)
-# Include files
-install(DIRECTORY include/${PROJECT_NAME}/
-    DESTINATION ${CATKIN_PACKAGE_INCLUDE_DESTINATION}
-    FILES_MATCHING PATTERN "*.h" PATTERN "*.hpp"
+
+ament_auto_package(
+  INSTALL_TO_SHARE
+    launch
+    config
 )

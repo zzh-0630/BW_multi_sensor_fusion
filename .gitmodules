@@ -1,0 +1,9 @@
+[submodule "base/bw_ros2_driver"]
+	path = base/bw_ros2_driver
+	url = https://github.com/zzh-0630/bw_ros2_driver.git
+[submodule "base/livox_ros_driver2"]
+	path = base/livox_ros_driver2
+	url = https://github.com/Livox-SDK/livox_ros_driver2.git
+[submodule "base/OrbbecSDK_ROS2"]
+	path = base/OrbbecSDK_ROS2
+	url = https://github.com/orbbec/OrbbecSDK_ROS2.git
