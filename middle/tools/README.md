@@ -1,0 +1,1 @@
+- livox_custom_downsample_demo: 点云下采样工具，输入mid360原始数据，输出下采样后的点云，可用rviz2观测，使用方法: 编译通过后，ros2 launch livox_custom_downsample_demo livox_downsample_rviz.launch.py leaf_size:=0.2 （leaf_size:= xxx 参数可调，越大则点云约稀疏）
